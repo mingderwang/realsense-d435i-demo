@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstdint>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -35,70 +36,93 @@ struct CaptureResult {
 };
 
 CaptureResult Capture(const CaptureConfig& cfg) {
+  const int kMaxAttempts = 3;
   CaptureResult r;
-  try {
-    rs2::pipeline pipe;
-    rs2::config config;
-    config.enable_stream(RS2_STREAM_DEPTH, cfg.depth.width, cfg.depth.height,
-                         RS2_FORMAT_Z16, cfg.depth.fps);
-    config.enable_stream(RS2_STREAM_COLOR, cfg.color.width, cfg.color.height,
-                         RS2_FORMAT_RGB8, cfg.color.fps);
+  std::string last_error;
 
-    rs2::pipeline_profile profile = pipe.start(config);
-    rs2::device dev = profile.get_device();
-    r.device_name = dev.get_info(RS2_CAMERA_INFO_NAME);
-    r.serial = dev.get_info(RS2_CAMERA_INFO_SERIAL_NUMBER);
+  for (int attempt = 1; attempt <= kMaxAttempts; ++attempt) {
+    r = CaptureResult{};
+    last_error.clear();
+    try {
+      rs2::pipeline pipe;
+      rs2::config config;
+      config.enable_stream(RS2_STREAM_DEPTH, cfg.depth.width, cfg.depth.height,
+                           RS2_FORMAT_Z16, cfg.depth.fps);
+      config.enable_stream(RS2_STREAM_COLOR, cfg.color.width, cfg.color.height,
+                           RS2_FORMAT_RGB8, cfg.color.fps);
 
-    rs2::frameset last;
-    for (int i = 0; i < cfg.warmup; ++i) last = pipe.wait_for_frames();
-    auto t0 = std::chrono::steady_clock::now();
-    for (int i = 0; i < cfg.frames; ++i) last = pipe.wait_for_frames();
-    auto t1 = std::chrono::steady_clock::now();
-    double dt = std::chrono::duration<double>(t1 - t0).count();
-    r.fps = dt > 0 ? cfg.frames / dt : 0.0;
+      rs2::pipeline_profile profile = pipe.start(config);
+      rs2::device dev = profile.get_device();
+      r.device_name = dev.get_info(RS2_CAMERA_INFO_NAME);
+      r.serial = dev.get_info(RS2_CAMERA_INFO_SERIAL_NUMBER);
 
-    rs2::depth_frame d = last.get_depth_frame();
-    rs2::video_frame c = last.get_color_frame();
+      rs2::frameset last;
+      for (int i = 0; i < cfg.warmup; ++i) last = pipe.wait_for_frames();
+      auto t0 = std::chrono::steady_clock::now();
+      for (int i = 0; i < cfg.frames; ++i) last = pipe.wait_for_frames();
+      auto t1 = std::chrono::steady_clock::now();
+      double dt = std::chrono::duration<double>(t1 - t0).count();
+      r.fps = dt > 0 ? cfg.frames / dt : 0.0;
 
-    r.depth_scale = d.get_units();
-    r.depth_w = d.get_width();
-    r.depth_h = d.get_height();
-    const uint16_t* dp = static_cast<const uint16_t*>(d.get_data());
-    r.depth_raw.assign(dp, dp + r.depth_w * r.depth_h);
+      rs2::depth_frame d = last.get_depth_frame();
+      rs2::video_frame c = last.get_color_frame();
 
-    r.color_w = c.get_width();
-    r.color_h = c.get_height();
-    const uint8_t* cp = static_cast<const uint8_t*>(c.get_data());
-    r.color_raw.assign(cp, cp + r.color_w * r.color_h * 3);
+      r.depth_scale = d.get_units();
+      r.depth_w = d.get_width();
+      r.depth_h = d.get_height();
+      const uint16_t* dp = static_cast<const uint16_t*>(d.get_data());
+      r.depth_raw.assign(dp, dp + r.depth_w * r.depth_h);
 
-    size_t center_depth = 0;
-    if (r.depth_h > 0 && r.depth_w > 0)
-      center_depth =
-          r.depth_raw[(r.depth_h / 2) * r.depth_w + (r.depth_w / 2)];
-    r.center_mm = center_depth * r.depth_scale * 1000.f;
+      r.color_w = c.get_width();
+      r.color_h = c.get_height();
+      const uint8_t* cp = static_cast<const uint8_t*>(c.get_data());
+      r.color_raw.assign(cp, cp + r.color_w * r.color_h * 3);
 
-    uint64_t sum = 0, valid = 0;
-    uint16_t mn = 65535, mx = 0;
-    for (auto v : r.depth_raw) {
-      if (v > 0) {
-        sum += v;
-        ++valid;
-        if (v < mn) mn = v;
-        if (v > mx) mx = v;
+      size_t center_depth = 0;
+      if (r.depth_h > 0 && r.depth_w > 0)
+        center_depth =
+            r.depth_raw[(r.depth_h / 2) * r.depth_w + (r.depth_w / 2)];
+      r.center_mm = center_depth * r.depth_scale * 1000.f;
+
+      uint64_t sum = 0, valid = 0;
+      uint16_t mn = 65535, mx = 0;
+      for (auto v : r.depth_raw) {
+        if (v > 0) {
+          sum += v;
+          ++valid;
+          if (v < mn) mn = v;
+          if (v > mx) mx = v;
+        }
+      }
+      r.valid_pct = r.depth_raw.empty() ? 0.0 : 100.0 * valid / r.depth_raw.size();
+      if (valid) {
+        r.min_m = mn * r.depth_scale;
+        r.mean_m = static_cast<float>(static_cast<double>(sum) / valid) * r.depth_scale;
+        r.max_m = mx * r.depth_scale;
+      }
+      pipe.stop();
+      return r;
+    } catch (const rs2::error& e) {
+      last_error = std::string("realsense error: ") + e.what();
+    } catch (const std::exception& e) {
+      last_error = std::string("error: ") + e.what();
+    }
+
+    if (attempt < kMaxAttempts) {
+      std::this_thread::sleep_for(std::chrono::seconds(2));
+      if (attempt == kMaxAttempts - 1) {
+        try {
+          rs2::context ctx;
+          auto devs = ctx.query_devices();
+          if (devs.size() > 0) devs.front().hardware_reset();
+          std::this_thread::sleep_for(std::chrono::seconds(6));
+        } catch (...) {
+        }
       }
     }
-    r.valid_pct = r.depth_raw.empty() ? 0.0 : 100.0 * valid / r.depth_raw.size();
-    if (valid) {
-      r.min_m = mn * r.depth_scale;
-      r.mean_m = static_cast<float>(static_cast<double>(sum) / valid) * r.depth_scale;
-      r.max_m = mx * r.depth_scale;
-    }
-    pipe.stop();
-  } catch (const rs2::error& e) {
-    r.error = std::string("realsense error: ") + e.what();
-  } catch (const std::exception& e) {
-    r.error = std::string("error: ") + e.what();
   }
+
+  r.error = last_error;
   return r;
 }
 
@@ -205,7 +229,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
   exports.Set("captureSync", Napi::Function::New(env, CaptureSync));
   exports.Set("getVersion", Napi::Function::New(
       env, [](const Napi::CallbackInfo& info) {
-        return Napi::String::New(info.Env(), "2.58.4 (realsense-napi 0.1.0)");
+        return Napi::String::New(info.Env(), "2.58.4 (realsense-napi 0.4.0)");
       }));
   return exports;
 }

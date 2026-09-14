@@ -1,6 +1,6 @@
 {
   "name": "@yourorg/realsense-napi",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Native N-API addon exposing a simple capture() API over the Intel RealSense D435i (librealsense2)",
   "gypfile": true,
   "main": "dist/realsense.js",

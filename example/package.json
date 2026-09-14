@@ -9,7 +9,7 @@
     "start": "node dist/demo.js"
   },
   "dependencies": {
-    "@yourorg/realsense-napi": "^0.3.0"
+    "@yourorg/realsense-napi": "^0.4.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
