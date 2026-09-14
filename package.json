@@ -1,0 +1,22 @@
+{
+  "name": "realsense-napi",
+  "version": "0.1.0",
+  "description": "Native N-API addon wrapping librealsense2 for the D435i",
+  "private": true,
+  "gypfile": true,
+  "main": "dist/realsense.js",
+  "scripts": {
+    "build": "node-gyp rebuild && tsc",
+    "build:native": "node-gyp rebuild",
+    "build:ts": "tsc",
+    "start": "node dist/cli.js"
+  },
+  "dependencies": {
+    "node-addon-api": "^8.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "node-gyp": "^11.0.0",
+    "typescript": "^5.7.0"
+  }
+}
