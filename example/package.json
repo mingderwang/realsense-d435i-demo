@@ -1,0 +1,18 @@
+{
+  "name": "realsense-napi-example",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Consumer demo importing @yourorg/realsense-napi",
+  "main": "dist/demo.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/demo.js"
+  },
+  "dependencies": {
+    "@yourorg/realsense-napi": "^0.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0"
+  }
+}

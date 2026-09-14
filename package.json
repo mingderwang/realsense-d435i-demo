@@ -1,22 +1,48 @@
 {
-  "name": "realsense-napi",
-  "version": "0.1.0",
-  "description": "Native N-API addon wrapping librealsense2 for the D435i",
-  "private": true,
+  "name": "@yourorg/realsense-napi",
+  "version": "0.3.0",
+  "description": "Native N-API addon exposing a simple capture() API over the Intel RealSense D435i (librealsense2)",
   "gypfile": true,
   "main": "dist/realsense.js",
+  "types": "dist/realsense.d.ts",
+  "files": [
+    "dist/",
+    "build/Release/realsense.node",
+    "src/",
+    "binding.gyp",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "os": [
+    "darwin"
+  ],
+  "keywords": [
+    "realsense",
+    "d435i",
+    "librealsense",
+    "depth camera",
+    "napi",
+    "native addon"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mingderwang/realsense-d435i-demo.git"
+  },
   "scripts": {
     "build": "node-gyp rebuild && tsc",
     "build:native": "node-gyp rebuild",
     "build:ts": "tsc",
-    "start": "node dist/cli.js"
-  },
-  "dependencies": {
-    "node-addon-api": "^8.3.1"
+    "start": "node dist/cli.js",
+    "docs": "typedoc"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
+    "node-addon-api": "^8.3.1",
     "node-gyp": "^11.0.0",
+    "typedoc": "^0.28.0",
     "typescript": "^5.7.0"
   }
 }

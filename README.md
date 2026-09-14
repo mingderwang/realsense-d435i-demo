@@ -23,8 +23,12 @@ You get:
 
 ## Using it from TypeScript
 
+```bash
+npm install @yourorg/realsense-napi   # macOS + librealsense 2.58+ required
+```
+
 ```ts
-import { capture, captureSync } from "./dist/realsense.js";
+import { capture, captureSync } from "@yourorg/realsense-napi";
 
 // async (non-blocking, worker thread)
 const result = await capture({
@@ -42,6 +46,8 @@ const rgb: Buffer = color.data;      // width*height*3 bytes, RGB order
 const z16: Buffer = depth.data;      // width*height*2 bytes, uint16 LE
 const m = (millimeters: number) => millimeters * depth.scale; // depth units
 ```
+
+> Full API documentation: https://pikmin-kappa.vercel.app
 
 ### Sync version
 
@@ -101,7 +107,7 @@ There is **no image decoding** in the addon — you get raw buffers and do whate
 
 ```ts
 import * as fs from "fs";
-import { capture } from "./realsense";
+import { capture } from "@yourorg/realsense-napi";
 import { PNG } from "pngjs";          // e.g. any encoder you like
 
 const { color, depth } = await capture();

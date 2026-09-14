@@ -1,0 +1,16 @@
+{
+  "$schema": "https://typedoc.org/schema.json",
+  "entryPoints": ["src/realsense.ts", "src/types.ts"],
+  "out": "docs",
+  "name": "@yourorg/realsense-napi",
+  "githubPages": false,
+  "readme": "README.md",
+  "excludeExternals": true,
+  "excludePrivate": true,
+  "includeVersion": true,
+  "navigation": {
+    "includeCategories": false,
+    "includeGroups": false
+  },
+  "categorizeByGroup": false
+}

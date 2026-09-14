@@ -7,3 +7,6 @@ build/
 dist/
 captures/session-*.md
 output/
+.vercel
+docs/
+example/out/

@@ -1,0 +1,8 @@
+{
+  "version": 2,
+  "framework": null,
+  "installCommand": "true echo \"no install (native mac-only module)\"",
+  "buildCommand": "true echo \"serving prebuilt docs/\"",
+  "outputDirectory": "docs",
+  "cleanUrls": true
+}
