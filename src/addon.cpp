@@ -1,13 +1,34 @@
 #include <napi.h>
 #include <librealsense2/rs.hpp>
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
 
 namespace {
+
+void RecoverDevice() {
+  try {
+    rs2::context ctx;
+    auto devs = ctx.query_devices();
+    if (devs.size() == 0) return;
+    for (int i = 0; i < 3; ++i) {
+      try {
+        devs.front().hardware_reset();
+        break;
+      } catch (const std::exception&) {
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+      }
+    }
+  } catch (const std::exception&) {
+  }
+  std::this_thread::sleep_for(std::chrono::seconds(8));
+}
 
 struct StreamCfg {
   int width = 0, height = 0, fps = 0;
@@ -39,24 +60,6 @@ CaptureResult Capture(const CaptureConfig& cfg) {
   const int kMaxAttempts = 3;
   CaptureResult r;
   std::string last_error;
-
-  const auto recover = []() {
-    try {
-      rs2::context ctx;
-      auto devs = ctx.query_devices();
-      if (devs.size() == 0) return;
-      for (int i = 0; i < 3; ++i) {
-        try {
-          devs.front().hardware_reset();
-          break;
-        } catch (const std::exception&) {
-          std::this_thread::sleep_for(std::chrono::seconds(1));
-        }
-      }
-    } catch (const std::exception&) {
-    }
-    std::this_thread::sleep_for(std::chrono::seconds(8));
-  };
 
   for (int attempt = 1; attempt <= kMaxAttempts; ++attempt) {
     r = CaptureResult{};
@@ -128,7 +131,7 @@ CaptureResult Capture(const CaptureConfig& cfg) {
 
     if (attempt < kMaxAttempts) {
       std::this_thread::sleep_for(std::chrono::seconds(2));
-      recover();
+      RecoverDevice();
     }
   }
 
@@ -232,14 +235,291 @@ Napi::Value CaptureAsync(const Napi::CallbackInfo& info) {
   return worker->Promise();
 }
 
+struct FrameData {
+  uint32_t index = 0;
+  bool is_error = false;
+  std::string error;
+  std::string device_name, serial;
+  int color_w = 0, color_h = 0;
+  std::vector<uint8_t> color;
+  int depth_w = 0, depth_h = 0;
+  float depth_scale = 0.f;
+  std::vector<uint16_t> depth;
+  float center_mm = 0.f;
+  double valid_pct = 0.0;
+  float min_m = 0.f, mean_m = 0.f, max_m = 0.f, fps = 0.f;
+};
+
+class StreamSession : public Napi::ObjectWrap<StreamSession> {
+ public:
+  static void Init(Napi::Env env, Napi::Object exports) {
+    Napi::Function ctor = DefineClass(
+        env, "StreamSession",
+        {InstanceMethod("open", &StreamSession::Open),
+         InstanceMethod("close", &StreamSession::Close)});
+    constructor = Napi::Persistent(ctor);
+    constructor.SuppressDestruct();
+    exports.Set("StreamSession", ctor);
+  }
+
+  StreamSession(const Napi::CallbackInfo& info)
+      : Napi::ObjectWrap<StreamSession>(info) {}
+
+  ~StreamSession() {
+    if (worker_.joinable()) {
+      running_ = false;
+      {
+        std::lock_guard<std::mutex> lock(pipe_mu_);
+        if (pipe_) {
+          try {
+            pipe_->stop();
+          } catch (const std::exception&) {
+          }
+        }
+      }
+      worker_.join();
+      ReleaseTsfn();
+    }
+  }
+
+ private:
+  static Napi::FunctionReference constructor;
+
+  static void CallJs(Napi::Env env, Napi::Function jsCallback, FrameData* fd) {
+    Napi::HandleScope scope(env);
+    Napi::Object o = Napi::Object::New(env);
+    o.Set("index", fd->index);
+    if (!fd->device_name.empty()) {
+      Napi::Object dev = Napi::Object::New(env);
+      dev.Set("name", fd->device_name);
+      dev.Set("serial", fd->serial);
+      o.Set("device", dev);
+    }
+    if (fd->is_error) {
+      o.Set("error", fd->error);
+    } else {
+      Napi::Object color = Napi::Object::New(env);
+      color.Set("width", fd->color_w);
+      color.Set("height", fd->color_h);
+      color.Set("data",
+                Napi::Buffer<uint8_t>::Copy(env, fd->color.data(), fd->color.size()));
+      o.Set("color", color);
+
+      Napi::Object depth = Napi::Object::New(env);
+      depth.Set("width", fd->depth_w);
+      depth.Set("height", fd->depth_h);
+      depth.Set("scale", fd->depth_scale);
+      depth.Set("data",
+                Napi::Buffer<uint16_t>::Copy(env, fd->depth.data(), fd->depth.size()));
+      o.Set("depth", depth);
+
+      Napi::Object stats = Napi::Object::New(env);
+      stats.Set("fps", fd->fps);
+      stats.Set("centerMm", fd->center_mm);
+      stats.Set("validPct", fd->valid_pct);
+      stats.Set("minM", fd->min_m);
+      stats.Set("meanM", fd->mean_m);
+      stats.Set("maxM", fd->max_m);
+      o.Set("stats", stats);
+    }
+    jsCallback.Call({o});
+  }
+
+  void ReleaseTsfn() {
+    if (tsfn_) tsfn_.Release();
+    tsfn_ = Napi::ThreadSafeFunction();
+  }
+
+  void SendError(const std::string& msg) {
+    if (!tsfn_) return;
+    auto fd = std::make_shared<FrameData>();
+    fd->is_error = true;
+    fd->error = msg;
+    tsfn_.BlockingCall(
+        [fd](Napi::Env env, Napi::Function cb) { CallJs(env, cb, fd.get()); });
+  }
+
+  void StreamLoop() {
+    const int kMaxAttempts = 3;
+    std::string last_error;
+    for (int attempt = 1;
+         attempt <= kMaxAttempts && running_.load(); ++attempt) {
+      auto pipe = std::make_shared<rs2::pipeline>();
+      {
+        std::lock_guard<std::mutex> lock(pipe_mu_);
+        pipe_ = pipe;
+      }
+      try {
+        rs2::config config;
+        config.enable_stream(RS2_STREAM_DEPTH, cfg_.depth.width,
+                             cfg_.depth.height, RS2_FORMAT_Z16, cfg_.depth.fps);
+        config.enable_stream(RS2_STREAM_COLOR, cfg_.color.width,
+                             cfg_.color.height, RS2_FORMAT_RGB8, cfg_.color.fps);
+
+        rs2::pipeline_profile profile = pipe->start(config);
+        rs2::device dev = profile.get_device();
+        device_name_ = dev.get_info(RS2_CAMERA_INFO_NAME);
+        serial_ = dev.get_info(RS2_CAMERA_INFO_SERIAL_NUMBER);
+
+        for (int i = 0; i < cfg_.warmup; ++i) {
+          if (!running_.load()) break;
+          pipe->wait_for_frames();
+        }
+        if (!running_.load()) break;
+
+        auto t0 = std::chrono::steady_clock::now();
+        uint64_t since_t0 = 0;
+        float fps = 0.f;
+        uint32_t index = 0;
+        while (running_.load()) {
+          rs2::frameset fs;
+          try {
+            fs = pipe->wait_for_frames();
+          } catch (const std::exception& e) {
+            if (!running_.load()) break;
+            last_error = e.what();
+            throw;
+          }
+          ++index;
+          ++since_t0;
+          auto t1 = std::chrono::steady_clock::now();
+          double dt = std::chrono::duration<double>(t1 - t0).count();
+          if (dt >= 1.0) {
+            fps = static_cast<float>(since_t0 / dt);
+            since_t0 = 0;
+            t0 = t1;
+          }
+
+          rs2::depth_frame d = fs.get_depth_frame();
+          rs2::video_frame c = fs.get_color_frame();
+
+          auto fd = std::make_shared<FrameData>();
+          fd->index = index;
+          fd->fps = fps > 0.f
+                        ? fps
+                        : static_cast<float>(cfg_.color.fps ? cfg_.color.fps : cfg_.depth.fps);
+          if (index == 1) {
+            fd->device_name = device_name_;
+            fd->serial = serial_;
+          }
+
+          fd->depth_scale = d.get_units();
+          fd->depth_w = d.get_width();
+          fd->depth_h = d.get_height();
+          const uint16_t* dp = static_cast<const uint16_t*>(d.get_data());
+          fd->depth.assign(dp, dp + fd->depth_w * fd->depth_h);
+
+          fd->color_w = c.get_width();
+          fd->color_h = c.get_height();
+          const uint8_t* cp = static_cast<const uint8_t*>(c.get_data());
+          fd->color.assign(cp, cp + fd->color_w * fd->color_h * 3);
+
+          if (fd->depth_h > 0 && fd->depth_w > 0)
+            fd->center_mm =
+                fd->depth[(fd->depth_h / 2) * fd->depth_w + (fd->depth_w / 2)] *
+                fd->depth_scale * 1000.f;
+
+          uint64_t sum = 0, valid = 0;
+          uint16_t mn = 65535, mx = 0;
+          for (auto v : fd->depth) {
+            if (v > 0) {
+              sum += v;
+              ++valid;
+              if (v < mn) mn = v;
+              if (v > mx) mx = v;
+            }
+          }
+          fd->valid_pct =
+              fd->depth.empty() ? 0.0 : 100.0 * valid / fd->depth.size();
+          if (valid) {
+            fd->min_m = mn * fd->depth_scale;
+            fd->mean_m = static_cast<float>(static_cast<double>(sum) / valid) *
+                         fd->depth_scale;
+            fd->max_m = mx * fd->depth_scale;
+          }
+
+          napi_status st = tsfn_.NonBlockingCall(
+              [fd](Napi::Env env, Napi::Function cb) { CallJs(env, cb, fd.get()); });
+          if (st == napi_queue_full) continue;
+        }
+        break;
+      } catch (const std::exception& e) {
+        if (!running_.load()) break;
+        last_error = std::string("realsense error: ") + e.what();
+        if (attempt < kMaxAttempts) {
+          std::this_thread::sleep_for(std::chrono::seconds(2));
+          RecoverDevice();
+        }
+      }
+    }
+    if (running_.load() && !last_error.empty()) SendError(last_error);
+    {
+      std::lock_guard<std::mutex> lock(pipe_mu_);
+      try {
+        if (pipe_) pipe_->stop();
+      } catch (const std::exception&) {
+      }
+      pipe_.reset();
+    }
+    running_ = false;
+  }
+
+  Napi::Value Open(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (opened_) throw Napi::Error::New(env, "stream already open");
+    if (info.Length() < 2 || !info[1].IsFunction())
+      throw Napi::Error::New(env, "callback required");
+    cfg_ = ParseConfig(info);
+    tsfn_ = Napi::ThreadSafeFunction::New(
+        env, info[1].As<Napi::Function>(), "RSFrame", 1, 1);
+    opened_ = true;
+    running_ = true;
+    if (worker_.joinable()) worker_.join();
+    worker_ = std::thread([this]() { StreamLoop(); });
+    return env.Undefined();
+  }
+
+  Napi::Value Close(const Napi::CallbackInfo& info) {
+    if (!opened_) return info.Env().Undefined();
+    opened_ = false;
+    running_ = false;
+    if (worker_.joinable()) {
+      {
+        std::lock_guard<std::mutex> lock(pipe_mu_);
+        if (pipe_) {
+          try {
+            pipe_->stop();
+          } catch (const std::exception&) {
+          }
+        }
+      }
+      worker_.join();
+    }
+    ReleaseTsfn();
+    return info.Env().Undefined();
+  }
+
+  CaptureConfig cfg_;
+  std::string device_name_, serial_;
+  std::atomic<bool> running_{false};
+  std::shared_ptr<rs2::pipeline> pipe_;
+  std::mutex pipe_mu_;
+  std::thread worker_;
+  Napi::ThreadSafeFunction tsfn_;
+  bool opened_ = false;
+};
+
+Napi::FunctionReference StreamSession::constructor;
+
 }  // namespace
 
 Napi::Object Init(Napi::Env env, Napi::Object exports) {
   exports.Set("capture", Napi::Function::New(env, CaptureAsync));
   exports.Set("captureSync", Napi::Function::New(env, CaptureSync));
+  StreamSession::Init(env, exports);
   exports.Set("getVersion", Napi::Function::New(
       env, [](const Napi::CallbackInfo& info) {
-        return Napi::String::New(info.Env(), "2.58.4 (realsense-napi 0.4.1)");
+        return Napi::String::New(info.Env(), "2.58.4 (realsense-napi 0.5.0)");
       }));
   return exports;
 }

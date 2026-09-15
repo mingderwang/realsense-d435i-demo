@@ -55,6 +55,41 @@ const m = (millimeters: number) => millimeters * depth.scale; // depth units
 const result = captureSync({ frames: 10 }); // blocks the event loop while capturing
 ```
 
+## Live streaming
+
+For continuous capture (AI visualization, webcam-style preview):
+
+```ts
+import { openStream } from "@yourorg/realsense-napi";
+
+const cam = openStream(
+  {
+    depth: { width: 848, height: 480, fps: 10 },
+    color: { width: 1280, height: 720, fps: 15 },
+  },
+  (frame) => {
+    if (frame.error) {
+      console.error("stream stopped:", frame.error);
+      return;
+    }
+    if (frame.device) console.log(frame.device.name, frame.device.serial); // only on frame 1
+    console.log(`#${frame.index}`, frame.stats.centerMm, "mm", frame.stats.fps, "fps");
+
+    // frame.color.data: RGB8 Buffer  width*height*3
+    // frame.depth.data: Z16 Buffer    width*height*2
+    // ... run your AI inference here, draw to canvas, etc.
+  }
+);
+
+// stop any time
+cam.close();
+```
+
+`onFrame` is called once per captured frame at the sensor rate. If your handler is
+slower than the camera, frames are **automatically dropped** (never queued), so the
+stream always stays live. A wedged camera on macOS self-recovers with a firmware
+reset; unrecoverable failures arrive as a frame with `error` set.
+
 ## API
 
 All options are optional.
@@ -90,6 +125,7 @@ interface CaptureStats {
 | ------------- | ---------- | --------------------------------------------- |
 | `capture(options?)`   | `Promise<CaptureResult>` | Async capture on a worker thread |
 | `captureSync(options?)` | `CaptureResult`         | Blocking capture (same result)   |
+| `openStream(options, onFrame)` | `RealsenseStream` | Continuous frame-by-frame stream (drops frames when slow) |
 | `getVersion()` | `string` | SDK version string               |
 
 ## CLI
@@ -100,6 +136,14 @@ sudo node dist/cli.js --out captures --frames 30 --depth 848x480@10 --color 1280
 ```
 
 Saves a `PPM` (color) and `PGM` (16-bit depth) snapshot to `captures/` and prints device + stats. Run `sudo node dist/cli.js --help` for options.
+
+## Example
+
+```bash
+cd example && npm install
+sudo node dist/demo.js           # single snapshot -> out/
+sudo node dist/stream_demo.js    # live stream (Ctrl+C to stop); add --save for PPM/PGM dumps
+```
 
 ## Working with the raw buffers
 

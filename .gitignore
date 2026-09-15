@@ -13,3 +13,5 @@ example/out/
 captures/
 reset_tool
 reset_tool.cpp
+bun.lock
+
