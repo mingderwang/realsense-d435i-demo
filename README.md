@@ -144,6 +144,8 @@ cd example && npm install
 sudo node dist/demo.js           # single snapshot -> out/
 sudo node dist/stream_demo.js    # live stream (Ctrl+C to stop); add --save for PPM/PGM dumps
 sudo node dist/ascii_stream.js   # live ASCII-art video in the terminal (--cols WIDTH)
+sudo node dist/live_ascii.ts     # dedicated LIVE-only text-art demo (runs via bun/tsx)
+sudo node dist/live_ascii.js     # same, compiled
 sudo node dist/ascii_stream.js --animate out   # play the saved PPM frames as a looping movie
 sudo node dist/ascii_stream.js --animate out --fps 15 --cols 120
 sudo node dist/ascii_stream.js --file out/stream-000060.ppm --cols 80  # single frame preview
