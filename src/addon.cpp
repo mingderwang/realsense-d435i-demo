@@ -40,6 +40,24 @@ CaptureResult Capture(const CaptureConfig& cfg) {
   CaptureResult r;
   std::string last_error;
 
+  const auto recover = []() {
+    try {
+      rs2::context ctx;
+      auto devs = ctx.query_devices();
+      if (devs.size() == 0) return;
+      for (int i = 0; i < 3; ++i) {
+        try {
+          devs.front().hardware_reset();
+          break;
+        } catch (const std::exception&) {
+          std::this_thread::sleep_for(std::chrono::seconds(1));
+        }
+      }
+    } catch (const std::exception&) {
+    }
+    std::this_thread::sleep_for(std::chrono::seconds(8));
+  };
+
   for (int attempt = 1; attempt <= kMaxAttempts; ++attempt) {
     r = CaptureResult{};
     last_error.clear();
@@ -110,15 +128,7 @@ CaptureResult Capture(const CaptureConfig& cfg) {
 
     if (attempt < kMaxAttempts) {
       std::this_thread::sleep_for(std::chrono::seconds(2));
-      if (attempt == kMaxAttempts - 1) {
-        try {
-          rs2::context ctx;
-          auto devs = ctx.query_devices();
-          if (devs.size() > 0) devs.front().hardware_reset();
-          std::this_thread::sleep_for(std::chrono::seconds(6));
-        } catch (...) {
-        }
-      }
+      recover();
     }
   }
 
@@ -229,7 +239,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
   exports.Set("captureSync", Napi::Function::New(env, CaptureSync));
   exports.Set("getVersion", Napi::Function::New(
       env, [](const Napi::CallbackInfo& info) {
-        return Napi::String::New(info.Env(), "2.58.4 (realsense-napi 0.4.0)");
+        return Napi::String::New(info.Env(), "2.58.4 (realsense-napi 0.4.1)");
       }));
   return exports;
 }
