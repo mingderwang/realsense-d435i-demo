@@ -143,6 +143,8 @@ Saves a `PPM` (color) and `PGM` (16-bit depth) snapshot to `captures/` and print
 cd example && npm install
 sudo node dist/demo.js           # single snapshot -> out/
 sudo node dist/stream_demo.js    # live stream (Ctrl+C to stop); add --save for PPM/PGM dumps
+sudo node dist/ascii_stream.js   # live ASCII-art video in the terminal (--cols WIDTH)
+sudo node dist/ascii_stream.js --file out/stream-000060.ppm --cols 80  # render a saved PPM
 ```
 
 ## Working with the raw buffers
